@@ -1,0 +1,123 @@
+import pandas
+import os
+## qsub command: snakemake -s week3.snake --sdm conda --executor cluster-generic --cluster-generic-submit-cmd "qsub -P bf528 -pe omp 16" --jobs 12
+
+sample_csv = pandas.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+
+rule all:
+	input:
+		'results/annotated_peaks.txt',
+		directory('results/motifs')
+
+rule make_tag_dir:
+	input:
+		sam_files='results/{condition}_{rep}_sorted.bam'
+	output:
+		outdir=directory('results/tagDir_{condition}_{rep}/')
+	params:
+	conda:
+		'envs/homer_env.yml'
+	shell:
+		'''
+		makeTagDirectory {output.outdir} {input.sam_files}
+		'''
+
+rule findPeaks:
+    input:
+    params:
+        dirR=directory('results/tagDir_RUNX1_{rep}/'),
+        dirI=directory('results/tagDir_INP_{rep}/')
+    output:
+        outfile='expand(results/{rep}_peaks.txt, rep=REPS)'      
+    conda:
+        'envs/homer_env.yml'
+    shell:
+        '''
+		findPeaks {params.dirR} -style factor -i {params.dirI} -o {output.outfile}
+        '''
+
+rule convertPeakFiles:
+	input:
+		peaks='results/{rep}_peaks.txt',
+	output:
+		bed='results/{rep}_peaks.bed'
+	conda:
+		'envs/homer_env.yml'
+	shell:
+		'''
+		pos2bed.pl {input.peaks} > {output.bed}
+		'''	
+
+rule intersect_peaks:
+	input:
+		R1='results/rep1_peaks.bed',
+		R2='results/rep2_peaks.bed'
+	output:
+		outfile='results/intersect.bed'
+	conda:
+		'envs/bedtools_env.yml'
+	shell:
+		'''
+		bedtools intersect -a {input.R1} -b {input.R2} -bed > {output.outfile}
+		'''
+
+rule filter_blacklist:
+	input:
+		alist='results/intersect.bed',
+		blist='results/hg38-blacklist.v2.bed'
+	output:
+		outfile='results/intersect_filtered.bed'
+	conda:
+		'envs/bedtools_env.yml'
+	shell:
+		'''
+		bedtools intersect -a {input.alist} -b {input.blist} -v -bed > {output.outfile}
+		'''
+
+rule unzip_gtf:
+	input:
+		GTFzip='results/gencode.v45.primary_assembly.annotation.gtf.gz'
+	output:
+		GTFunzip='results/gencode.v45.primary_assembly.annotation.gtf'
+	shell:
+		'''
+		 gunzip -k {input.GTFzip} > {output.GTFunzip}
+		'''
+
+rule annotate_peaks:
+	input:
+		peaks='results/intersect_filtered.bed',
+	output:
+		outfile='results/annotated_peaks.txt'
+	conda:
+		'envs/homer_env.yml'
+	shell:
+		'''
+		annotatePeaks.pl {input.peaks} hg38  > {output.outfile}
+		'''
+
+rule unzip_genome:
+	input:
+		Gzip='results/GRCh38.primary_assembly.genome.fa.gz'
+	output:
+		Gunzip='results/GRCh38.primary_assembly.genome.fa'
+	shell:
+		'''
+		gunzip -k {input.Gzip} > {output.Gunzip}
+		'''
+
+rule motifs:
+	input:
+		peaks='results/intersect_filtered.bed',
+		fa='results/GRCh38.primary_assembly.genome.fa'
+	output:
+		outdir=directory('results/motifs')
+	conda:
+		'envs/homer_env.yml'
+	shell:
+		'''
+			mkdir {output.outdir}
+			findMotifsGenome.pl {input.peaks} {input.fa} {output.outdir} -size 200
+		'''

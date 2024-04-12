@@ -1,0 +1,133 @@
+import pandas
+
+## qsub command: snakemake -s week2.snake --sdm conda --executor cluster-generic --cluster-generic-submit-cmd "qsub -P bf528 -pe omp 16" --jobs 23
+
+sample_csv = pandas.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+
+rule all:
+	input:
+		expand('results/{condition}_{rep}_aligned.bam', condition=CONDITIONS, rep=REPS),
+		expand('results/{condition}_{rep}_sorted.bam', condition=CONDITIONS, rep=REPS),
+		'results/multiqc_report.html',
+		expand('results/{condition}_{rep}_flagstat_summary.txt', condition=CONDITIONS, rep=REPS),
+		expand('results/{condition}_{rep}_coverage.bw', condition=CONDITIONS, rep=REPS),
+		'results/bwsummary.npz',
+		'heatmap.png'
+
+rule bowtie2_align:
+	input:
+		#trimmed_reads=expand('results/{condition}_{rep}_trimmed.fastq.gz', condition=CONDITIONS, rep=REPS),
+		trimmed_reads=lambda wildcards: [
+        f'results/{wildcards.condition}_{wildcards.rep}_trimmed.fastq.gz']
+	output:
+		#samfiles=expand('results/{condition}_{rep}_aligned.sam', condition=CONDITIONS, rep=REPS),
+		#bamfiles=expand('results/{condition}_{rep}_aligned.bam', condition=CONDITIONS, rep=REPS)
+		samfiles='results/{condition}_{rep}_aligned.sam',
+		bamfiles='results/{condition}_{rep}_aligned.bam'
+	threads: 16
+	params:
+		gen_dir=directory('results/index/'),
+	conda:
+		'envs/bowtie2_env.yml'
+	shell:
+		'''
+		bowtie2 -p {threads} -x {params.gen_dir}Genome -U {input.trimmed_reads} -S {output.samfiles} 
+		samtools view --threads {threads} -Sb -o {output.bamfiles} {output.samfiles}
+		'''
+
+rule samtools_sort:
+	input:
+		bamfiles= lambda wildcards: [
+			f'results/{wildcards.condition}_{wildcards.rep}_aligned.bam']
+	output:
+		sorted_bam='results/{condition}_{rep}_sorted.bam'
+	conda:
+		'envs/samtools_env.yml'
+	shell:
+		'''
+			samtools sort {input.bamfiles} -o {output.sorted_bam}
+			samtools index {output.sorted_bam}
+		'''
+
+#this rule was added to samtools_sort instead
+rule samtools_idx:
+	input:
+		sorted_bam= lambda wildcards: [
+			f'results/{wildcards.condition}_{wildcards.rep}_sorted.bam']
+	conda:
+		'envs/samtools_env.yml'
+	shell:
+		'''
+			samtools index {input.sorted_bam}
+		'''
+
+rule multiqc:
+	input:
+		fastqc=expand('results/{condition}_{rep}_fastqc.html', condition=CONDITIONS, rep=REPS)
+	output:
+		'results/multiqc_report.html'
+	params:
+		outdir='results/'
+	conda:
+		'envs/multiqc_env.yml'
+	shell:
+		'''
+			multiqc {params.outdir} -f -o {params.outdir}
+		'''
+
+rule samtools_flagstat:
+    input:
+        sorted_bam=lambda wildcards: [
+			f'results/{wildcards.condition}_{wildcards.rep}_sorted.bam'],
+    output:
+        txt='results/{condition}_{rep}_flagstat_summary.txt'
+    params:
+    	#condition = lambda wildcards: wildcards.condition,
+		#rep = lambda wildcards: wildcards.rep
+    conda:
+	    'envs/samtools_env.yml'	
+    shell:
+        '''
+        samtools flagstat {input.sorted_bam} > {output.txt}
+        '''
+
+rule bamCoverage:
+	input:
+		sorted_bam=lambda wildcards: [
+			f'results/{wildcards.condition}_{wildcards.rep}_sorted.bam'],
+	output:
+		outfile='results/{condition}_{rep}_coverage.bw'
+	threads: 4
+	conda:
+		'envs/deeptools_env.yml'
+	shell:
+		'''
+		bamCoverage -b {input.sorted_bam} -o {output.outfile}
+		'''
+
+rule multiBwSummary:
+	input:
+		bwfile=expand('results/{condition}_{rep}_coverage.bw', condition=CONDITIONS, rep=REPS)
+	output:
+		outfile='results/bwsummary.npz'
+	conda:
+		'envs/deeptools_env.yml'
+	shell:
+		'''
+		multiBigwigSummary bins -b {input.bwfile} -o {output.outfile}
+		'''
+
+rule plotCorrelation:
+	input:
+		bwsumm='results/bwsummary.npz'
+	output:
+		plot='heatmap.png'
+	params:
+	conda:
+		'envs/deeptools_env.yml'
+	shell:
+		'''
+		plotCorrelation -in {input.bwsumm} -c pearson -p heatmap -o {output.plot}
+		'''

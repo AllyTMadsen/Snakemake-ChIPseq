@@ -1,0 +1,76 @@
+import pandas
+
+## qsub command: snakemake -s week1.snake --sdm conda --executor cluster-generic --cluster-generic-submit-cmd "qsub -P bf528 -pe omp 16" --jobs 19
+
+sample_csv = pandas.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+
+#these are the unique file names for bowtie2
+SUFFIX = ['1', '2', '3', '4', 'rev.1', 'rev.2']
+
+rule all:
+	input:
+		expand('samples/{condition}_{rep}.fastq.gz', condition=CONDITIONS, rep=REPS),
+		#expand('results/test_index_chr21.{suffix}.bt2', suffix=SUFFIX),
+		directory('results/index/'),       									#snakemake doesnt like this but it does work...
+		expand('results/{condition}_{rep}_fastqc.html', condition=CONDITIONS, rep=REPS),
+		expand('results/{condition}_{rep}_trimmed.fastq.gz', condition=CONDITIONS, rep=REPS),
+	
+
+rule wget_files:
+	output:
+		'samples/{condition}_{rep}.fastq.gz'
+	params:
+		link = lambda wildcards: sample_csv.loc['{}_{}'.format(wildcards.condition, wildcards.rep), 'ftp_link'],
+		renamed = lambda wildcards: 'samples/{}_{}.fastq.gz'.format(wildcards.condition, wildcards.rep)
+	shell:
+		'''
+		wget -O {params.renamed} {params.link} 
+		'''
+
+rule bowtie2_build_gencode:
+	input:
+		fa='results/GRCh38.primary_assembly.genome.fa.gz'  	#swapped for full genome file
+	output:
+		#files='results/genome_index.{suffix}.bt2',      #specifying out files does not work for some reason
+		outdir=directory('results/index/')
+	params:
+		index_name='results/genome_index'
+	threads: 16
+	conda:
+		'envs/bowtie2_env.yml'
+	shell:
+		'''
+		mkdir -p {output.outdir}
+		bowtie2-build --threads {threads} {input.fa} {output.outdir}/Genome
+		'''
+
+rule fastqc:
+	input:
+		fq='samples/{condition}_{rep}.fastq.gz',
+	output:
+		fc='results/{condition}_{rep}_fastqc.html'
+	params:
+		outdir='results/',
+	threads: 4
+	conda:
+		'envs/fastqc_env.yml'
+	shell:
+		'''
+		fastqc {input.fq} -o {params.outdir}
+		'''
+
+rule trimomatic:
+	input:
+		reads='samples/{condition}_{rep}.fastq.gz',
+		fc='results/{condition}_{rep}_fastqc.html',         #tells snakemake not to execute this rule until the FC file is created
+	output:
+		out='results/{condition}_{rep}_trimmed.fastq.gz'
+	threads: 8
+	conda:
+		'envs/trimmomatic_env.yml'
+	shell:
+		'''
+		trimmomatic SE -threads {threads} {input.reads} {output.out}  ILLUMINACLIP:TruSeq3-SE.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15
+		'''

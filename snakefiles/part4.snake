@@ -1,0 +1,50 @@
+import pandas
+import os
+## qsub command: snakemake -s week4.snake --sdm conda --executor cluster-generic --cluster-generic-submit-cmd "qsub -P bf528 -pe omp 16" --jobs 5
+
+sample_csv = pandas.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+
+rule all:
+	input:
+		'results/RNAseq_log2_foldchange.txt.gz',
+		expand('results/RUNX1_{rep}_plot_genome.png', rep = REPS)
+
+
+rule getDESEQ:
+    output:
+        DEdata='results/RNAseq_log2_foldchange.txt.gz',
+    params:
+        url = 'https://ftp.ncbi.nlm.nih.gov/geo/series/GSE75nnn/GSE75070/suppl/GSE75070%5FMCF7%5FshRUNX1%5FshNS%5FRNAseq%5Flog2%5Ffoldchange.txt.gz',
+    shell:
+        '''
+        wget -O {output.DEdata} {params.url} 
+        '''
+
+rule computeMatrix:
+	input:
+		INP='results/RUNX1_{rep}_coverage.bw',
+		bed='results/hg19_genes.bed'    #correct file, wrong file name
+	output:
+		outfile='results/RUNX1_{rep}_mat.tab'
+	params:
+	conda:
+		'envs/deeptools_env.yml'
+	threads: 4
+	shell:
+		'''
+		computeMatrix scale-regions -S {input.INP} -R {input.bed} -a 2000 -b 2000 --outFileName {output.outfile}
+		'''
+
+rule plotMatrix:
+	input:
+		mat='results/RUNX1_{rep}_mat.tab'
+	output:
+		plot='results/RUNX1_{rep}_plot_genome.png'
+	conda:
+		'envs/deeptools_env.yml'
+	shell:
+		'''
+		plotProfile -m {input.mat} --colors green -o {output.plot}
+		'''
